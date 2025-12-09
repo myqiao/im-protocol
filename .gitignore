@@ -16,8 +16,6 @@
 
 # Dependency directories
 vendor/
-go.mod
-go.sum
 
 # Build directories
 build/
