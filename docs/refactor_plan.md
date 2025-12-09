@@ -1,12 +1,22 @@
 # IM Protocol 重构计划
 
-## 1. 重构目标
+## 1. 重构目标与原则
 
+### 1.1 核心目标
 - ✅ **单一职责原则**：将功能按职责拆分到不同模块
 - ✅ **标准Go项目结构**：遵循Go项目工程最佳实践
-- ✅ **简单易用接口**：对外隐藏复杂实现细节
-- ✅ **保持向后兼容**：确保现有代码能平滑迁移
+- ✅ **简单易用接口**：对外隐藏复杂实现细节，提供简洁API
 - ✅ **提高可维护性**：模块化设计便于后续扩展和维护
+- ✅ **测试覆盖**：需要确保所有功能都有充分测试
+- ✅ **性能保持**：保持原有性能指标不变或提升
+
+### 1.2 重构原则
+在整个重构过程中，我们将严格遵循以下原则：
+- **不考虑兼容性**：由于这是一个新的项目，我们可以不考虑与旧版本的兼容性
+- **小步快跑**：一次只重构一个功能或包，每次修改保持最小化
+- **功能不变**：确保重构前后功能完全一致，不引入新功能或修改现有行为
+- **测试驱动**：每个重构步骤都要有完整的测试验证
+- **可扩展性**：设计接口时考虑未来扩展需求，便于后续功能扩展
 
 ## 2. 目录结构设计
 
@@ -31,342 +41,399 @@ im-protocol/
 └── README.md           # 项目文档
 ```
 
-## 3. 模块拆分方案
+## 3. 接口设计原则
 
-### 3.1 buffer 模块
+为确保重构后接口的易用性和一致性，我们遵循以下设计原则：
 
-**职责**：缓冲区池管理，减少内存分配和GC压力
-
-**文件结构**：
-- `pkg/buffer/pool.go`：分级缓冲区池实现
-
-**核心接口**：
-```go
-// Get 获取指定大小的缓冲区
-func Get(size int) *[]byte
-
-// Put 归还缓冲区到池中
-func Put(bufPtr *[]byte)
-```
-
-**实现细节**：
-- 从 `protocol.go` 中迁移 `tieredBufferPool` 实现
-- 隐藏内部实现细节，对外提供简单的Get/Put接口
-
-### 3.2 config 模块
-
-**职责**：集中管理配置常量
-
-**文件结构**：
-- `pkg/config/config.go`：协议相关常量定义
-
-**核心内容**：
-```go
-// 协议版本常量
-const (
-    ProtocolVersionV1      uint8 = 1
-    ProtocolVersionV2      uint8 = 2
-    CurrentProtocolVersion uint8 = ProtocolVersionV1
-)
-
-// 帧类型常量
-const (
-    FrameTypeJSON     = 1
-    FrameTypeProtobuf = 2
-    FrameTypeMsgPack  = 3
-)
-
-// 缓冲区大小常量
-const (
-    SmallBufferSize  = 2 * 1024
-    MediumBufferSize = 4 * 1024
-    LargeBufferSize  = 8 * 1024
-)
-
-// 其他常量...
-```
-
-### 3.3 core 模块
-
-**职责**：核心数据结构和基础操作
-
-**文件结构**：
-- `pkg/core/frame.go`：Frame结构体定义和基础方法
-
-**核心接口**：
-```go
-// New 创建新的协议帧
-func New(frameType uint8, body []byte, options ...core.Option) (*Frame, error)
-
-// Frame 协议帧接口
-type Frame interface {
-    GetVersion() uint8
-    SetVersion(version uint8)
-    GetType() uint8
-    SetType(frameType uint8)
-    GetBody() []byte
-    SetBody(body []byte)
-    GetBodyLength() uint32
-    Encode() ([]byte, error)
-    EncodeTo(w io.Writer) (n int, err error)
-    EncodeToBytes(buf []byte) (n int, err error)
-}
-```
-
-**实现细节**：
-- 从 `protocol.go` 中迁移 `Frame` 结构体和相关方法
-- 保持核心方法不变，优化接口设计
-
-### 3.4 sync 模块
-
-**职责**：并发安全封装
-
-**文件结构**：
-- `pkg/sync/frame.go`：并发安全的帧结构
-
-**核心接口**：
-```go
-// New 创建新的并发安全协议帧
-func New(frameType uint8, body []byte, options ...core.Option) (*SyncFrame, error)
-
-// SyncFrame 并发安全的协议帧接口
-type SyncFrame interface {
-    core.Frame
-    WithLock(f func(*core.Frame))
-    WithRLock(f func(*core.Frame))
-    Clone() *SyncFrame
-}
-```
-
-**实现细节**：
-- 从 `protocol.go` 中迁移 `SyncFrame` 结构体和相关方法
-- 保持与core.Frame接口兼容
-
-### 3.5 errors 模块
-
-**职责**：统一错误处理
-
-**文件结构**：
-- `pkg/errors/errors.go`：自定义错误类型和处理函数
-
-**核心接口**：
-```go
-// ProtocolError 自定义协议错误类型
-type ProtocolError struct {
-    Code    ErrorCode
-    Message string
-    Original error
-}
-
-// 错误检查函数
-func IsFrameTypeError(err error) bool
-func IsVersionError(err error) bool
-func IsMessageTooLongError(err error) bool
-func IsInvalidFrameError(err error) bool
-```
-
-**实现细节**：
-- 从 `protocol.go` 中迁移错误处理相关代码
-- 提供统一的错误类型和检查函数
-
-### 3.6 options 模块
-
-**职责**：选项模式实现
-
-**文件结构**：
-- `pkg/options/options.go`：选项接口和实现
-
-**核心接口**：
-```go
-// Option 帧选项接口
-type Option interface {
-    applyFrame(*core.Frame) error
-}
-
-// WithVersion 设置帧版本选项
-func WithVersion(version uint8) Option
-
-// WithCopyBody 设置是否深拷贝body选项
-func WithCopyBody(copy bool) Option
-
-// WithZeroCopy 设置是否使用零拷贝模式
-func WithZeroCopy(zeroCopy bool) Option
-```
-
-**实现细节**：
-- 从 `protocol.go` 中迁移选项模式相关代码
-- 简化接口，统一Option类型
-
-### 3.7 codec 模块
-
-**职责**：编解码功能
-
-**文件结构**：
-- `pkg/codec/codec.go`：编解码接口和实现
-
-**核心接口**：
-```go
-// Encode 编码协议帧
-func Encode(frame core.Frame) ([]byte, error)
-
-// Decode 解码协议帧
-func Decode(data []byte) (*core.Frame, error)
-
-// EncodeTo 将帧编码并写入io.Writer
-func EncodeTo(frame core.Frame, w io.Writer) (n int, err error)
-
-// EncodeToBytes 将帧编码到提供的缓冲区
-func EncodeToBytes(frame core.Frame, buf []byte) (n int, err error)
-```
-
-**实现细节**：
-- 从 `protocol.go` 中迁移编解码相关代码
-- 提供统一的编解码接口
-
-### 3.8 stream 模块
-
-**职责**：流式处理（解决TCP粘包/拆包问题）
-
-**文件结构**：
-- `pkg/stream/decoder.go`：流式解码器
-
-**核心接口**：
-```go
-// NewDecoder 创建新的流解码器
-func NewDecoder(options ...Option) *Decoder
-
-// Decoder 流解码器接口
-type Decoder interface {
-    Feed(data []byte) error
-    TryDecode() (*core.Frame, error)
-    DecodeFromReader(reader io.Reader) (*core.Frame, error)
-    Reset()
-    Buffered() int
-    Peek() []byte
-    ReadFramesFromStream(reader io.Reader) ([]*core.Frame, error)
-}
-```
-
-**实现细节**：
-- 从 `protocol.go` 中迁移StreamDecoder相关代码
-- 优化接口设计，提高易用性
-
-## 4. 接口设计原则
-
-### 4.1 简洁性
+### 3.1 简洁性
 
 - 对外接口应尽可能简单，隐藏内部实现细节
 - 使用函数式选项模式简化复杂配置
 - 提供合理的默认值，减少配置项
 
-### 4.2 一致性
+### 3.2 一致性
 
 - 保持接口命名风格一致（如使用动词+名词形式）
 - 错误处理方式统一
 - 参数和返回值格式一致
 
-### 4.3 兼容性
+### 3.3 可扩展性
 
-- 确保与现有代码的向后兼容性
-- 提供迁移指南和示例代码
+- 设计接口时考虑未来扩展需求
+- 使用接口而非具体实现类型
+- 提供扩展点允许用户自定义功能
 
-## 5. 实现步骤
+## 4. 模块依赖层面
 
-### 步骤1：创建目录结构
+重构中需注意模块间的依赖方向，建议遵循「底层→核心→上层」的依赖链：
 
-```bash
-mkdir -p pkg/{buffer,codec,config,core,errors,options,stream,sync}
-touch pkg/{buffer,codec,config,core,errors,options,stream,sync}/go.mod
+```plaintext
+config/errors → buffer → core → codec/stream/sync → 对外接口
 ```
 
-### 步骤2：实现基础模块
+- **config/errors**：最底层模块，提供常量和错误定义，不依赖其他模块
+- **buffer**：依赖 config，提供缓冲区池功能
+- **core**：依赖 config/errors，提供核心数据结构（如 Frame）
+- **codec/stream/sync**：依赖 core 和 buffer，提供编解码、流式处理和并发安全封装
+- **对外接口**：依赖所有底层模块，提供统一的 API 入口
 
-1. **config模块**：迁移所有常量定义
-2. **errors模块**：迁移错误处理相关代码
-3. **buffer模块**：迁移缓冲区池实现
+**注意事项**：
+- codec 可依赖 core（Frame 结构体）和 buffer（缓冲区池），但 core 不可依赖 codec
+- 在阶段 6 拆分 core 时需提前定义好接口，避免后续反向依赖
+- 任何模块都不应形成循环依赖，确保依赖链单向流动
 
-### 步骤3：实现核心模块
+### 4.1 模块交互示例
 
-1. **core模块**：迁移Frame结构体和基础方法
-2. **options模块**：迁移选项模式实现
-
-### 步骤4：实现扩展模块
-
-1. **sync模块**：迁移SyncFrame实现
-2. **codec模块**：迁移编解码功能
-3. **stream模块**：迁移流式处理功能
-
-### 步骤5：实现集成接口
-
-1. 在根目录创建 `im-protocol.go`，提供统一的对外接口
-2. 实现简单易用的API，封装内部模块调用
-
-### 步骤6：编写测试
-
-1. 为每个模块编写单元测试
-2. 编写集成测试确保模块间协作正常
-3. 编写性能测试验证性能指标
-
-## 6. 测试计划
-
-### 6.1 单元测试
-
-- **buffer**：测试缓冲区池的Get/Put功能
-- **core**：测试Frame的创建和基本操作
-- **sync**：测试并发安全操作
-- **codec**：测试编解码功能和版本兼容性
-- **stream**：测试流式处理和粘包/拆包处理
-- **errors**：测试错误类型和检查函数
-
-### 6.2 集成测试
-
-- 测试完整的编解码流程
-- 测试并发环境下的性能和正确性
-- 测试边界情况处理
-
-### 6.3 性能测试
-
-- 测试缓冲区池的性能提升
-- 测试编解码性能
-- 测试流式处理性能
-
-## 7. 向后兼容性
-
-为确保现有代码能平滑迁移，提供以下兼容措施：
-
-1. **保持API签名一致**：核心函数名和参数保持不变
-2. **提供兼容层**：在根目录提供与旧版本兼容的接口
-3. **迁移指南**：编写详细的迁移文档和示例代码
-
-## 8. 预期效果
-
-### 8.1 代码结构
-
-- 各模块职责清晰，代码组织有序
-- 遵循Go项目工程最佳实践
-- 便于后续扩展和维护
-
-### 8.2 接口易用性
-
+#### 4.1.1 流式解码完整流程
 ```go
-// 旧接口（复杂）
-frame, err := protocol.NewFrame(protocol.FrameTypeJSON, []byte("hello"), protocol.WithVersion(protocol.ProtocolVersionV1))
+// 1. 创建流式解码器
+decoder := stream.NewDecoder(buffer.Get(4096))
 
-// 新接口（简洁）
-frame, err := core.New(config.FrameTypeJSON, []byte("hello"), options.WithVersion(config.ProtocolVersionV1))
+// 2. 从网络连接读取数据
+conn.Read(data)
+
+// 3. 流式解码器处理数据（内部调用 codec.Decode）
+decoder.Feed(data)
+
+// 4. 尝试解码获取完整帧（内部依赖 codec 和解码逻辑）
+frame, err := decoder.TryDecode()
+if err != nil {
+    // 处理解码错误（使用 errors 包定义的错误类型）
+    log.Printf("解码失败: %v", err)
+    return
+}
+
+// 5. 处理解码后的 Frame（使用 core 包的 Frame 结构体）
+fmt.Printf("解码成功：类型=%s, 长度=%d\n", config.FrameTypeToString(frame.Type()), frame.DataLen())
+
+// 6. 处理完成后回收缓冲区
+buffer.Put(decoder.Buffer())
 ```
 
-### 8.3 性能保持
+#### 4.1.2 帧编码完整流程
+```go
+// 1. 创建核心 Frame 结构体（使用 core 包）
+frame := core.NewFrame(config.FrameTypeData)
 
-- 保持原有性能指标不变
-- 可能因模块化带来轻微性能提升
+// 2. 设置帧数据（使用 core 包的 Frame 方法）
+frame.SetData([]byte("hello world"))
+frame.SetTimestamp(time.Now().Unix())
 
-## 9. 风险评估
+// 3. 编码 Frame（使用 codec 包的 Encode 函数）
+encodedData, err := codec.Encode(frame)
+if err != nil {
+    // 处理编码错误（使用 errors 包定义的错误类型）
+    log.Printf("编码失败: %v", err)
+    return
+}
 
-- **接口变更**：可能需要现有代码进行少量修改
-- **测试覆盖**：需要确保所有功能都有充分测试
-- **性能影响**：模块化可能带来轻微的性能开销
+// 4. 发送编码后的数据到网络连接
+conn.Write(encodedData)
+```
 
-## 10. 总结
+## 5. 模块拆分与渐进式实现计划
 
-本次重构将按照单一职责原则和Go项目工程标准，将现有代码拆分为多个功能明确的模块，同时保持接口的简单易用性。通过合理的模块拆分和接口设计，将大大提高代码的可维护性和可扩展性，为后续的功能扩展和优化奠定良好基础。
+### 阶段1：准备工作（已完成）
+
+✅ **目标**：为重构做好准备
+
+**已完成工作**：
+- 创建标准Go项目目录结构
+- 创建完整的测试套件（protocol_test.go）
+- 优化.gitignore和go.mod配置
+
+**测试类型**：
+- 已建立基础单元测试框架
+- 已准备集成测试环境
+- 已设置性能测试基准
+
+### 阶段2：常量配置抽取（简单）
+
+**目标**：将所有常量定义迁移到独立的config包
+
+**模块信息**：
+- **模块名**：config
+- **职责**：集中管理配置常量
+- **文件结构**：`pkg/config/config.go`
+- **核心内容**：协议版本、帧类型、缓冲区大小等常量定义
+
+**实现步骤**：
+1. 创建 `pkg/config/config.go` 文件
+2. 从 `protocol.go` 中提取所有常量定义
+3. 在原文件中使用 `config.XXX` 替换直接引用
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：
+  - 验证常量值的正确性，验证常量引用方式的正确性
+  - 新增 `TestConfig_ConstantConsistency` 测试，验证新旧常量值完全一致
+- **集成测试**：确保其他模块能正确引用新常量包，覆盖「跨包引用常量不报错」场景
+
+**验证标准**：所有测试通过，常量使用方式统一
+
+### 阶段3：错误处理抽取（简单）
+
+**目标**：将错误类型和处理函数迁移到独立的errors包
+
+**模块信息**：
+- **模块名**：errors
+- **职责**：统一错误处理
+- **文件结构**：`pkg/errors/errors.go`
+- **核心接口**：自定义错误类型（ProtocolError）和错误检查函数
+
+**实现步骤**：
+1. 创建 `pkg/errors/errors.go` 文件
+2. 从 `protocol.go` 中提取错误类型定义和检查函数
+3. 在原文件中使用 `errors.XXX` 替换直接引用
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：测试错误类型的创建，测试错误检查函数的正确性，测试错误信息的完整性
+- **集成测试**：确保其他模块能正确使用错误包
+
+**验证标准**：所有测试通过，错误处理逻辑一致
+
+### 阶段4：缓冲区池抽取（中等）
+
+**目标**：将缓冲区池实现迁移到独立的buffer包
+
+**模块信息**：
+- **模块名**：buffer
+- **职责**：缓冲区池管理，减少内存分配和GC压力
+- **文件结构**：`pkg/buffer/pool.go`
+- **核心接口**：Get()和Put()函数
+
+**实现步骤**：
+1. 创建 `pkg/buffer/pool.go` 文件
+2. 从 `protocol.go` 中提取 `tieredBufferPool` 实现
+3. 保留原文件中的函数封装，内部调用新包
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：测试缓冲区池的Get/Put功能，测试边界情况（极端大小的缓冲区）
+- **性能测试**：
+  - 明确基准指标：记录原代码的内存分配次数/GC耗时
+  - 新增 `BenchmarkBufferPool_Alloc` 测试，对比重构前后的性能
+  - 量化指标：重构后内存分配次数 ≤ 原版本，GC耗时下降 ≥ 0%（即不上升）
+- **集成测试**：确保其他模块能正确使用缓冲区池
+
+**验证标准**：所有测试通过，内存分配和GC行为一致，性能指标保持或提升
+
+### 阶段5：选项模式抽取（中等）
+
+**目标**：将选项模式相关代码迁移到独立的options包
+
+**模块信息**：
+- **模块名**：options
+- **职责**：选项模式实现
+- **文件结构**：`pkg/options/options.go`
+- **核心接口**：Option接口和WithXXX选项函数
+
+**实现步骤**：
+1. 创建 `pkg/options/options.go` 文件
+2. 从 `protocol.go` 中提取选项相关类型和函数
+3. 更新原文件中的调用方式
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：测试各种选项的正确应用，测试选项组合的正确性，测试无效选项的错误处理
+- **集成测试**：确保其他模块能正确使用选项包
+
+**验证标准**：所有测试通过，选项配置行为一致
+
+### 阶段6：核心数据结构抽取（核心）
+
+**目标**：将Frame结构体和基础方法迁移到独立的core包
+
+**模块信息**：
+- **模块名**：core
+- **职责**：核心数据结构和基础操作
+- **文件结构**：`pkg/core/frame.go`
+- **核心接口**：Frame结构体和基本操作方法
+
+**实现步骤**：
+1. 创建 `pkg/core/frame.go` 文件
+2. 从 `protocol.go` 中提取Frame结构体和基本方法
+3. 更新相关模块引用
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：测试Frame的创建和基本操作，测试Frame的属性设置和获取，测试Frame的状态管理，测试边界情况和异常处理
+- **集成测试**：确保Frame与其他模块的交互正常
+- **性能测试**：
+  - 测试Frame操作的性能指标
+  - 量化指标：Frame创建/复制/修改操作耗时波动 ≤ ±5%，内存占用与原版本一致
+
+**验证标准**：所有测试通过，Frame行为完全一致，性能指标保持或提升
+
+### 阶段7：并发安全封装抽取（中等）
+
+**目标**：将SyncFrame实现迁移到独立的sync包
+
+**模块信息**：
+- **模块名**：sync
+- **职责**：并发安全封装
+- **文件结构**：`pkg/sync/frame.go`
+- **核心接口**：SyncFrame接口和并发安全操作方法
+
+**实现步骤**：
+1. 创建 `pkg/sync/frame.go` 文件
+2. 从 `protocol.go` 中提取SyncFrame实现
+3. 更新相关模块引用
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：测试并发安全操作，测试WithLock/WithRLock方法，测试Clone方法的正确性
+- **集成测试**：测试并发环境下与其他模块的协作
+- **性能测试**：
+  - 测试并发环境下的性能和正确性
+  - 量化指标：并发读写操作的锁竞争降低 ≥ 0%，高并发场景下吞吐量波动 ≤ ±5%
+
+**验证标准**：所有测试通过，并发安全特性不变，性能指标保持或提升
+
+### 阶段8：编解码功能抽取（核心）
+
+**目标**：将编解码相关函数迁移到独立的codec包
+
+**模块信息**：
+- **模块名**：codec
+- **职责**：编解码功能
+- **文件结构**：`pkg/codec/codec.go`
+- **核心接口**：Encode/Decode函数和EncodeTo/EncodeToBytes函数
+
+**实现步骤**：
+1. 创建 `pkg/codec/codec.go` 文件
+2. 从 `protocol.go` 中提取编解码相关函数
+3. 更新相关模块引用
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：
+  - 测试编解码功能，测试EncodeTo和EncodeToBytes方法
+  - 覆盖「所有帧类型编解码」场景
+  - 覆盖「空数据 / 超大数据」等边界场景
+  - 测试边界情况和异常处理
+- **集成测试**：
+  - 测试完整的编解码流程
+  - 新增集成测试，串联 buffer+core+codec 全流程
+- **性能测试**：
+  - 测试编解码性能
+  - 量化指标：单帧编解码耗时波动 ≤ ±5%，QPS 保持原水平
+
+**验证标准**：所有测试通过，编解码结果一致，性能指标保持或提升
+
+### 阶段9：流式处理抽取（核心）
+
+**目标**：将StreamDecoder实现迁移到独立的stream包
+
+**模块信息**：
+- **模块名**：stream
+- **职责**：流式处理（解决TCP粘包/拆包问题）
+- **文件结构**：`pkg/stream/decoder.go`
+- **核心接口**：Decoder接口和相关方法
+
+**实现步骤**：
+1. 创建 `pkg/stream/decoder.go` 文件
+2. 从 `protocol.go` 中提取StreamDecoder实现
+3. 更新相关模块引用
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：
+  - 测试Feed/TryDecode方法，测试DecodeFromReader和ReadFramesFromStream方法
+  - 新增 `TestStreamDecoder_StickyPacket` 测试，模拟TCP粘包/拆包场景，模拟真实网络数据分片
+- **集成测试**：测试流式处理和粘包/拆包处理
+- **性能测试**：
+  - 测试流式处理性能
+  - 量化指标：粘包场景下解码成功率 100%，耗时与原版本一致
+
+**验证标准**：所有测试通过，流式处理行为一致，性能指标保持或提升
+
+### 阶段10：统一对外接口（集成）
+
+**目标**：创建统一的对外接口，封装内部模块
+
+**实现步骤**：
+1. 创建根目录 `im-protocol.go` 文件
+2. 提供简洁易用的API接口，直接暴露核心功能
+3. 移除旧的 `protocol.go` 文件，实现完全重构
+4. 运行测试确保功能不变
+
+**测试类型与要求**：
+- **单元测试**：测试统一接口的各个功能点
+- **集成测试**：测试模块间的协作，测试完整的编解码流程
+- **性能测试**：测试整体性能，确保性能指标保持或提升
+- **文档测试**：新增 Example 测试（如 `ExampleEncodeFrame`），既验证功能又作为对外文档
+
+**验证标准**：所有测试通过，对外接口简洁易用，性能指标保持或提升
+
+### 阶段11：清理与优化（收尾）
+
+**目标**：移除冗余代码，优化接口设计
+
+**实现步骤**：
+1. 移除原文件中的兼容层代码
+2. 优化各模块间的依赖关系
+3. **完善文档和注释**（严格遵循以下规范）
+4. 运行所有测试确保功能不变
+
+**文档与注释规范**：
+
+### 注释要求
+- **公共接口**：所有公共函数、结构体、接口必须编写完整的 godoc 注释
+  ```go
+  // Encode 将 Frame 编码为字节数组
+  // 参数：
+  //   frame: 要编码的核心 Frame 结构体
+  // 返回值：
+  //   []byte: 编码后的字节数组
+  //   error: 编码过程中发生的错误（使用 errors 包定义的错误类型）
+  func Encode(frame core.Frame) ([]byte, error)
+  ```
+- **核心函数**：关键业务逻辑函数需说明参数、返回值和异常场景
+- **内部实现**：复杂算法或非直观代码块需添加注释说明
+- **常量定义**：所有公共常量需说明其用途和取值范围
+- **错误类型**：自定义错误需说明触发条件
+
+### 文档输出清单
+- **README.md**：项目介绍、快速开始、核心功能、API 概览
+- **模块文档**：各 pkg 目录下的 README.md，说明模块职责、使用方法、示例代码
+- **示例代码**：examples 目录下提供完整的使用示例
+- **API 文档**：通过 `go doc` 命令生成的在线 API 文档（或使用 pkg.go.dev）
+- **测试文档**：tests 目录下的测试说明和使用指南
+
+**测试要求**：
+- 运行所有单元测试
+- 运行集成测试
+- 运行性能测试
+
+**验证标准**：所有测试通过，代码结构清晰，文档完整（符合上述注释要求和文档清单）
+
+## 5. 风险点与规避方案
+
+### 5.1 循环依赖风险
+**风险描述**：拆分过程中若模块间互相引用（如 codec 引用 stream，stream 又引用 codec），会导致编译失败。
+
+**规避方案**：
+- 提前定义接口（如 stream.Decoder 依赖 codec.Decode 接口而非具体实现）
+- 遵循「底层→核心→上层」的依赖链：config/errors → buffer → core → codec/stream/sync → 对外接口
+- 在阶段 10 统一接口时再解耦，避免模块间直接依赖
+
+### 5.2 测试覆盖不全风险
+**风险描述**：若仅测试「正常场景」，边界场景（如超大帧、空帧、并发写 Frame）可能遗漏，导致回归问题。
+
+**规避方案**：
+- 为每个核心模块编写「测试矩阵」，例如 core/frame.go 测试矩阵包含：
+  - 正常帧：各字段赋值/读取
+  - 异常帧：字段超出常量范围、空数据帧
+  - 并发帧：多协程读写 SyncFrame
+- 为边界场景编写专项测试，如 TestStreamDecoder_StickyPacket（TCP 粘包/拆包）
+- 集成测试需串联 buffer+core+codec 全流程，验证模块间协作正确性
+
+## 6. 总结
+
+本次重构将按照单一职责原则和Go项目工程标准，将现有代码拆分为多个功能明确的模块，同时提供简洁易用的新接口。通过合理的模块拆分和接口设计，将大大提高代码的可维护性和可扩展性，为后续的功能扩展和优化奠定良好基础。
+
+重构将采用小步快跑的方式，从简单的常量配置和错误处理抽取开始，逐步过渡到核心功能的拆分，确保每次修改都有完整的测试验证，保持功能的稳定性。
+
+通过本次重构，代码结构将更加清晰，接口将更加易用，为项目的长期发展提供有力支持。
